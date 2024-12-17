@@ -32,8 +32,14 @@ from fairscale.nn.model_parallel.initialize import (
 from termcolor import cprint
 
 from ..api.args import ModelArgs
-from ..api.chat_format import ChatFormat, LLMInput
-from ..api.datatypes import RawContent, RawMessage, StopReason, ToolPromptFormat
+from ..api.chat_format import ChatFormat, ModelInput
+from ..api.datatypes import (
+    CompletionMessage,
+    InterleavedTextMedia,
+    Message,
+    StopReason,
+    ToolPromptFormat,
+)
 from ..api.tokenizer import Tokenizer
 from .model import Transformer
 
@@ -47,7 +53,7 @@ class CompletionPrediction:
 
 @dataclass
 class ChatPrediction:
-    generation: RawMessage
+    generation: CompletionMessage
     decoded_tokens: Optional[List[str]] = None
     logprobs: Optional[List[List[float]]] = None
 
@@ -143,7 +149,7 @@ class Llama:
             model.setup_cache(model_args.max_batch_size, torch.bfloat16)
         else:
             model = Transformer(model_args)
-        model.load_state_dict(checkpoint, strict=True)
+        model.load_state_dict(checkpoint, strict=False)
         print(f"Loaded in {time.time() - start_time:.2f} seconds")
 
         return Llama(model, tokenizer, model_args)
@@ -157,13 +163,13 @@ class Llama:
     @torch.inference_mode()
     def generate(
         self,
-        model_input: LLMInput,
+        model_input: ModelInput,
         max_gen_len: int,
         temperature: float = 0.6,
         top_p: float = 0.9,
         logprobs: bool = False,
         echo: bool = False,
-        print_model_input: bool = False,
+        print_model_input: bool = True,
     ) -> Generator:
         params = self.model.params
 
@@ -172,10 +178,15 @@ class Llama:
                 self.formatter.vision_token if t == 128256 else t
                 for t in model_input.tokens
             ]
-            cprint(
-                "Input to model:\n" + self.tokenizer.decode(tokens_to_print) + "\n",
-                "red",
-            )
+           
+            # cprint(
+            #     "Input to model:\n" + self.tokenizer.decode(tokens_to_print) + "\n",
+            #     "red",
+            # )
+            # cprint(
+            #     "Input to model:\n" + self.tokenizer.decode(tokens_to_print[:47]) + "\n",
+            #     "red",
+            # )
         prompt_tokens = [model_input.tokens]
 
         bsz = 1
@@ -213,6 +224,7 @@ class Llama:
         if logprobs:
             token_logprobs = torch.zeros_like(tokens, dtype=torch.float)
 
+      
         prev_pos = 0
         eos_reached = torch.tensor([False] * bsz, device="cuda")
         input_text_mask = tokens != pad_id
@@ -243,7 +255,9 @@ class Llama:
                     text_only_inference,
                 )
             else:
-                logits = self.model.forward(tokens[:, prev_pos:cur_pos], prev_pos)
+               
+                
+                logits = self.model.forward(tokens[:, prev_pos:cur_pos], prev_pos,tokens[:,:100])
 
             if temperature > 0:
                 probs = torch.softmax(logits[:, -1] / temperature, dim=-1)
@@ -297,7 +311,7 @@ class Llama:
 
     def text_completion(
         self,
-        content: RawContent,
+        content: InterleavedTextMedia,
         temperature: float = 0.6,
         top_p: float = 0.9,
         max_gen_len: Optional[int] = None,
@@ -341,7 +355,7 @@ class Llama:
 
     def chat_completion(
         self,
-        messages: List[RawMessage],
+        messages: List[Message],
         temperature: float = 0.6,
         top_p: float = 0.9,
         max_gen_len: Optional[int] = None,
@@ -397,7 +411,7 @@ class Llama:
 
     def chat_completion_raw(
         self,
-        messages: List[RawMessage],
+        messages: List[Message],
         temperature: float = 0.6,
         top_p: float = 0.9,
         max_gen_len: Optional[int] = None,
@@ -426,7 +440,7 @@ class Llama:
 
     def text_completion_raw(
         self,
-        content: RawContent,
+        content: InterleavedTextMedia,
         temperature: float = 0.6,
         top_p: float = 0.9,
         max_gen_len: Optional[int] = None,
@@ -442,6 +456,8 @@ class Llama:
         input_tokens = model_input.tokens
 
         output_tokens = []
+        token_logprobs = []
+        decoded_tokens = []
         for result in self.generate(
             model_input=model_input,
             max_gen_len=max_gen_len,
@@ -477,3 +493,4 @@ def sample_top_p(probs, p):
     next_token = torch.multinomial(probs_sort, num_samples=1)
     next_token = torch.gather(probs_idx, -1, next_token)
     return next_token
+
